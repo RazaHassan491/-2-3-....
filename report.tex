@@ -1,0 +1,423 @@
+\documentclass[12pt,a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[top=2.5cm, bottom=2.5cm, left=3cm, right=3cm]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{fontenc}
+\usepackage{inputenc}
+\usepackage{microtype}
+\usepackage{setspace}
+
+% ── Hyperref setup ────────────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue,
+    citecolor=black
+}
+
+% ── Code listing style ────────────────────────────────────────────────────────
+\lstdefinestyle{pythonstyle}{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{gray}\itshape,
+    stringstyle=\color{orange!80!black},
+    numberstyle=\tiny\color{gray},
+    numbers=left,
+    stepnumber=1,
+    frame=single,
+    rulecolor=\color{black!30},
+    backgroundcolor=\color{gray!5},
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4,
+    captionpos=b
+}
+\lstset{style=pythonstyle}
+
+% ── Header / Footer ───────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Network Security — Cipher Analysis}
+\lhead{Known Plaintext Attack}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Section formatting ────────────────────────────────────────────────────────
+\titleformat{\section}{\large\bfseries}{{\thesection.}}{0.5em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries}{{\thesubsection}}{0.5em}{}
+
+\setstretch{1.15}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+
+% ── Title Page ────────────────────────────────────────────────────────────────
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\Large \textbf{Network Security — Special Project II}\par}
+    \vspace{0.4cm}
+    {\large Department of Computer Science and Information Engineering\par}
+    \vspace{2.5cm}
+    {\Huge \textbf{Known Plaintext Attack on a\\[0.3em]
+    Custom Multi-Round Block Cipher}\par}
+    \vspace{1.5cm}
+    {\large \textit{Cryptanalysis of Group 3's Poker–Permutation–Huffman Cipher}\par}
+    \vspace{3cm}
+
+    \begin{tabular}{rl}
+        \textbf{Subject}   & Network Security \\[4pt]
+        \textbf{Topic}     & Cipher Design and Cryptanalysis \\[4pt]
+        \textbf{Method}    & Known Plaintext Attack (KPA) \\[4pt]
+    \end{tabular}
+
+    \vfill
+    {\large \today\par}
+\end{titlepage}
+
+% ── Table of Contents ─────────────────────────────────────────────────────────
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+
+This report documents the cryptanalysis of a custom symmetric block cipher designed by Group~3 as part of the Network Security Special Project~II assignment. The cipher processes four-character plaintexts drawn from a 36-character alphabet ($\{$\texttt{0--9, a--z}$\}$) and produces a binary ciphertext through two sequential encoding rounds.
+
+The attack scenario is a \textbf{Known Plaintext Attack (KPA)}, the classical setting in which an analyst holds at least one plaintext–ciphertext pair and seeks to recover the secret key. Here, the pair is:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Item} & \textbf{Value} \\
+\midrule
+Known plaintext $M_2$ & \texttt{book} \\
+Corresponding ciphertext $C_2$ & 123-bit binary string \\
+Target ciphertext $C_1$ & 140-bit binary string \\
+Key space & base-36 strings of length 1 to 4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The objective is to recover the secret key from $(M_2, C_2)$ and subsequently decrypt $C_1$ to obtain the unknown plaintext $M_1$.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Cipher Description}
+
+\subsection{Alphabet and Key Encoding}
+
+The cipher operates over an alphabet of 36 characters:
+\[
+    \Sigma = \{\texttt{0, 1, 2, \ldots, 9, a, b, \ldots, z}\}
+\]
+Each character is assigned a numeric value $v \in \{0, 1, \ldots, 35\}$ in lexicographic order. A key string $K$ of length $\ell$ is converted to a single integer \emph{seed master} (\texttt{sm}) via base-36 encoding:
+\[
+    \texttt{sm}(K) = \sum_{i=0}^{\ell-1} v(K_i) \cdot 36^{\,\ell - 1 - i}
+\]
+
+\subsection{Pseudorandom Number Generator}
+
+All deck shuffles and permutation tables are driven by a 32-bit Linear Congruential Generator (LCG):
+\[
+    s_{n+1} = (1664525 \cdot s_n + 1013904223) \bmod 2^{32}
+\]
+This is the same parameterisation used in the Numerical Recipes family of LCGs and produces a full-period sequence over $[0, 2^{32})$.
+
+\subsection{Deck Construction — Fisher--Yates Shuffle}
+
+Given a seed value $\sigma$, a deck of 36 elements is produced by applying the Fisher--Yates (Knuth) shuffle from index 35 down to 0:
+
+\begin{lstlisting}[caption={Deck construction via Fisher--Yates shuffle}]
+def make_deck(seed):
+    deck = list(range(36))
+    s = seed
+    for i in range(35, -1, -1):
+        s = lcg_next(s)
+        j = s % (i + 1)
+        deck[i], deck[j] = deck[j], deck[i]
+    return deck
+\end{lstlisting}
+
+\subsection{Stage 1 — Poker Card Substitution}
+
+The poker substitution step replaces each input character using two pre-shuffled decks (\texttt{dA} and \texttt{dB}) in alternation. For a text of length $n$ with input character values $v_i$:
+
+\[
+    \text{off}_i = (i + 1 + \text{prev}) \bmod 36, \qquad
+    \text{idx}_i = (v_i + \text{off}_i) \bmod 36
+\]
+\[
+    r_i =
+    \begin{cases}
+        \texttt{dA}[\text{idx}_i] & \text{if } i \text{ is even} \\
+        \texttt{dB}[\text{idx}_i] & \text{if } i \text{ is odd}
+    \end{cases}
+    \qquad \text{prev} \leftarrow r_i
+\]
+
+The initial value of \texttt{prev} is $\texttt{sm} \bmod 36$. Deck seeds are XOR-derived from \texttt{sm} using constants specific to each round (detailed in Section~\ref{sec:rounds}).
+
+\subsection{Stage 2 — Permutation}
+
+A position permutation $\pi$ of length $n$ is generated by drawing $n$ values from the LCG, then sorting their indices by value (ascending). The text is reordered accordingly:
+\[
+    T'_i = T_{\pi(i)}, \quad i = 0, 1, \ldots, n-1
+\]
+The permutation seed is XOR-derived from \texttt{sm} with a round-specific constant.
+
+\subsection{Stage 3 — Score-Tree (Huffman) Encoding}
+
+A Huffman tree is constructed for the full 36-character alphabet using \emph{scores} computed from a seed $\eta$:
+\[
+    \text{score}_i = \bigl((i+1) \cdot \eta + 17\bigr) \bmod 997, \quad i = 0, 1, \ldots, 35
+\]
+Characters with lower scores receive longer codes (they are treated as less frequent). The heap ordering uses \texttt{(score, counter, node)} to break ties deterministically by insertion order.
+
+After encoding each character, the seed is updated via SHA-256:
+\[
+    \eta' = \texttt{SHA-256}\!\left(\,\texttt{str}(\eta \oplus \texttt{ord}(c))\,\right)
+\]
+where $c$ is the character just encoded and $\texttt{ord}(c)$ is its ASCII value.
+
+The initial score seed for each round is:
+\[
+    \eta_{\text{R}n} = \sum_{c \,\in\, K + \text{``R}n\text{''}} \texttt{ord}(c)
+\]
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Two-Round Structure}
+\label{sec:rounds}
+
+The cipher applies the three-stage pipeline twice. All XOR constants follow a uniform scaling rule: \textbf{Round $n$ uses $n \times \texttt{0x1111}$, $n \times \texttt{0x2222}$, and $n \times \texttt{0x3333}$} as its XOR offsets for deck~A, deck~B, and the permutation, respectively.
+
+\begin{table}[H]
+\centering
+\caption{XOR constants and score seeds for each round}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Round} & \textbf{Poker Deck A} & \textbf{Poker Deck B} & \textbf{Permutation} & \textbf{Score Seed} \\
+\midrule
+Round 1 & \texttt{sm} $\oplus$ \texttt{0x1111} & \texttt{sm} $\oplus$ \texttt{0x2222} & \texttt{sm} $\oplus$ \texttt{0x3333} & $\eta_{R1}$ \\
+Round 2 & \texttt{sm} $\oplus$ \texttt{0x2222} & \texttt{sm} $\oplus$ \texttt{0x4444} & \texttt{sm} $\oplus$ \texttt{0x6666} & $\eta_{R2}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent The full encryption pipeline is:
+\[
+M \;\xrightarrow{\text{Poker}_1}\; S_1
+  \;\xrightarrow{\text{Perm}_1}\; T_1
+  \;\xrightarrow{\text{Huffman}_1}\; R_1
+  \;\xrightarrow{\text{Poker}_2}\; S_2
+  \;\xrightarrow{\text{Perm}_2}\; T_2
+  \;\xrightarrow{\text{Huffman}_2}\; C
+\]
+
+Round~1 converts the four-character plaintext into a binary string $R_1$. Round~2 treats each bit of $R_1$ as a character (values 0 or 1 in $\Sigma$), applies poker substitution to map them into the full 36-character alphabet, permutes the result, and encodes via a second Huffman tree to produce the final binary ciphertext.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Known Plaintext Attack — Methodology}
+
+\subsection{Key Space}
+
+The secret key is a string of length 1 to 4 over $\Sigma$, giving a total key space of:
+\[
+    |\mathcal{K}| = 36^1 + 36^2 + 36^3 + 36^4 = 36 + 1{,}296 + 46{,}656 + 1{,}679{,}616 = 1{,}727{,}604
+\]
+This size is small enough for exhaustive search.
+
+\subsection{Attack Strategy}
+
+A direct brute-force approach is impractical at scale when each candidate key requires multiple SHA-256 calls and Huffman tree constructions per character. The attack was therefore split into two phases.
+
+\subsubsection*{Phase 1 — Reverse Decoding of $C_2$}
+
+Rather than encoding forward for every key, the ciphertext $C_2$ is decoded \emph{backwards} under all plausible initial seeds and seed-update formulas to obtain the set of all strings that could be the input $T_2$ to the final Huffman step. Specifically, for each seed $\eta \in \{0, 1, \ldots, 996\}$ (the effective range modulo 997) and each of seven seed-update formulas, the decoder reads $C_2$ bit by bit and attempts to recover exactly $L$ characters (for $L \in \{20, 21, \ldots, 30\}$), consuming all 123 bits with no remainder.
+
+This pre-computation yields a set $\mathcal{T}$ of 662 candidate strings grouped by length, computed once and held in memory.
+
+\subsubsection*{Phase 2 — Forward Key Search with String Matching}
+
+For each candidate key $K$:
+\begin{enumerate}[noitemsep]
+    \item Compute $\texttt{sm}(K)$ and execute Round~1 on $M_2 = \texttt{book}$, obtaining $R_1$.
+    \item For each combination of XOR constants $(\texttt{xA}, \texttt{xB}) \in \{k \cdot \texttt{0x1111}\}^2$ and permutation constant $\texttt{pc} \in \{k \cdot \texttt{0x1111}\}$:
+        \begin{itemize}[noitemsep]
+            \item Apply poker substitution with \texttt{xA}, \texttt{xB} to $R_1$.
+            \item Apply permutation with seed $\texttt{sm} \oplus \texttt{pc}$.
+            \item Check whether the resulting string belongs to $\mathcal{T}$.
+        \end{itemize}
+    \item On a match, verify by running the full encryption and comparing against $C_2$ exactly.
+\end{enumerate}
+
+This approach replaces repeated SHA-256 and Huffman computations with a simple set-membership test, substantially reducing per-key cost.
+
+\subsection{Parallelisation}
+
+The key search was distributed across all available CPU cores using Python's \texttt{multiprocessing.Pool}. Keys were divided into chunks of 500 and dispatched to worker processes that share the pre-computed $\mathcal{T}$ via an initialiser. The pool terminates as soon as any worker returns a valid key.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Results}
+
+\subsection{Key Recovery}
+
+The brute-force search identified the following key:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Secret key $K$          & \texttt{4z1j} \\
+Seed master \texttt{sm} & 232{,}039 \\
+Score seed $\eta_{R1}$  & 460 \\
+Score seed $\eta_{R2}$  & 461 \\
+Round~2 poker constants & \texttt{sm} $\oplus$ \texttt{0x2222}, \texttt{sm} $\oplus$ \texttt{0x4444} \\
+Round~2 perm constant   & \texttt{sm} $\oplus$ \texttt{0x6666} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Decryption of $C_1$}
+
+Using key \texttt{4z1j}, the decryption of $C_1$ proceeds by reversing both rounds in sequence:
+
+\begin{enumerate}[noitemsep]
+    \item Decode $C_1$ (140 bits) via the Round~2 Huffman tree (seed $\eta_{R2} = 461$) to obtain $T_2$ (24 characters).
+    \item Apply the inverse permutation (seed \texttt{sm} $\oplus$ \texttt{0x6666}).
+    \item Apply inverse poker substitution (constants \texttt{0x2222}, \texttt{0x4444}) to recover $R_1$ (binary, 24 bits).
+    \item Decode $R_1$ via the Round~1 Huffman tree (seed $\eta_{R1} = 460$) to obtain 4 characters.
+    \item Apply the inverse permutation (seed \texttt{sm} $\oplus$ \texttt{0x3333}).
+    \item Apply inverse poker substitution (constants \texttt{0x1111}, \texttt{0x2222}) to recover $M_1$.
+\end{enumerate}
+
+\begin{center}
+\large
+$M_1 = \texttt{heir}$
+\end{center}
+
+\subsection{Intermediate Values — $M_2 = \texttt{book}$}
+
+\begin{table}[H]
+\centering
+\caption{Step-by-step encryption trace for $M_2 = \texttt{book}$}
+\begin{tabular}{clll}
+\toprule
+\textbf{Step} & \textbf{Operation} & \textbf{Input} & \textbf{Output} \\
+\midrule
+R1.1 & Poker sub (\texttt{0x1111/0x2222}) & \texttt{book} & \texttt{1410} \\
+R1.2 & Permutation (\texttt{sm}$\oplus$\texttt{0x3333}) & \texttt{1410} & \texttt{0114} \\
+R1.3 & Huffman encode (seed 460) & \texttt{0114} & \texttt{0111110101011001010100} (22 bits) \\
+R2.1 & Poker sub (\texttt{0x2222/0x4444}) & 22-bit $R_1$ & \texttt{nkaaim6arf78plb0lxil9q} \\
+R2.2 & Permutation (\texttt{sm}$\oplus$\texttt{0x6666}) & above & \texttt{0nmfaklalr7ix96iaqbl8p} \\
+R2.3 & Huffman encode (seed 461) & above & $C_2$ (123 bits) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Intermediate Values — $M_1 = \texttt{heir}$}
+
+\begin{table}[H]
+\centering
+\caption{Step-by-step encryption trace for $M_1 = \texttt{heir}$}
+\begin{tabular}{clll}
+\toprule
+\textbf{Step} & \textbf{Operation} & \textbf{Input} & \textbf{Output} \\
+\midrule
+R1.1 & Poker sub (\texttt{0x1111/0x2222}) & \texttt{heir} & \texttt{3rqm} \\
+R1.2 & Permutation (\texttt{sm}$\oplus$\texttt{0x3333}) & \texttt{3rqm} & \texttt{mq3r} \\
+R1.3 & Huffman encode (seed 460) & \texttt{mq3r} & \texttt{101011011000001101100101} (24 bits) \\
+R2.1 & Poker sub (\texttt{0x2222/0x4444}) & 24-bit $R_1$ & \texttt{my3bl0fyo3sx1a7yjfg40iel} \\
+R2.2 & Permutation (\texttt{sm}$\oplus$\texttt{0x6666}) & above & \texttt{ym03byjy4eosllf0fg3i7ax1} \\
+R2.3 & Huffman encode (seed 461) & above & $C_1$ (140 bits) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Verification}
+
+Both results were verified by running the forward encryption and comparing the output against the original ciphertexts bit by bit:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Test} & \textbf{Expected} & \textbf{Result} \\
+\midrule
+\texttt{encrypt("book", "4z1j")} $= C_2$ & 123 bits & \textbf{Match} \\
+\texttt{encrypt("heir", "4z1j")} $= C_1$ & 140 bits & \textbf{Match} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Discussion}
+
+\subsection{Why the Cipher is Vulnerable to KPA}
+
+The cipher's susceptibility to an exhaustive key search under KPA conditions stems from two factors. First, the key space of roughly 1.7 million candidates is well within the reach of a modern multi-core processor in under two minutes, with no specialised hardware required. Second, the deterministic nature of all three stages — the LCG shuffle, the positional poker substitution, and the score-seeded Huffman tree — means that for a given key, the entire encryption is reproducible exactly. There is no randomisation (nonce, IV, or salt) introduced per message, so a single known pair is sufficient to identify the key by exhaustive search.
+
+\subsection{The XOR Constant Pattern}
+
+An interesting structural property of the cipher is the uniform scaling of XOR constants across rounds. Round $n$ derives all three of its seeds (deck A, deck B, permutation) by multiplying the base triplet $(\texttt{0x1111}, \texttt{0x2222}, \texttt{0x3333})$ by $n$. This regularity is consistent with the slide~12 formula for permutation seeds ($\text{pid} \times \texttt{0x3333}$, where pid is the round index) and extends naturally to the poker step. While elegant as a design principle, it means that an analyst who has recovered Round~1's constants can immediately infer Round~2's constants without any additional information.
+
+\subsection{Strengthening Recommendations}
+
+Several straightforward measures would significantly raise the cost of a KPA against this cipher:
+
+\begin{itemize}[noitemsep]
+    \item \textbf{Longer keys.} Extending the key to 8 characters raises the search space to $36^8 \approx 2.8 \times 10^{12}$, placing exhaustive search out of reach without purpose-built hardware.
+    \item \textbf{Message-specific randomisation.} Prepending a random nonce to each message and incorporating it into the seed derivation would invalidate any pre-computed table derived from a single known pair.
+    \item \textbf{Independent round constants.} Deriving round constants from a key-dependent function rather than a fixed arithmetic pattern would prevent an analyst from inferring Round~2 parameters from Round~1.
+    \item \textbf{Replacing the LCG.} The 32-bit LCG has a period of $2^{32}$ and is statistically weak; replacing it with a cryptographic PRNG (e.g.\ ChaCha20 or AES-CTR) would remove the structural predictability in the deck construction.
+\end{itemize}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Conclusion}
+
+This report presented a complete Known Plaintext Attack on Group~3's custom poker–permutation–Huffman cipher. Starting from the single known pair $(M_2, C_2) = (\texttt{book}, C_2)$, the secret key \texttt{4z1j} was recovered by exhaustive search over a key space of 1,727,604 candidates. The attack combined a backwards decoding phase — which pre-computed all valid intermediate strings from $C_2$ without knowing the key — with a fast string-matching forward search that avoided repeated Huffman computations.
+
+With the recovered key, the previously unknown plaintext of $C_1$ was determined to be:
+\[
+    \boxed{M_1 = \texttt{heir}}
+\]
+Both results were confirmed by re-encrypting each plaintext and verifying an exact bit-for-bit match against the original ciphertexts.
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section*{Appendix — Source Files}
+\addcontentsline{toc}{section}{Appendix — Source Files}
+
+Three Python scripts implement the full attack and are available in the project repository:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{File} & \textbf{Purpose} \\
+\midrule
+\texttt{crack\_v10.py}   & KPA brute force — recovers key and decrypts $M_1$ \\
+\texttt{decrypt\_c1.py}  & Step-by-step decryption trace for $C_1$ \\
+\texttt{final\_verify.py} & Bit-for-bit forward encryption verification \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All scripts require only Python~3 standard library modules (\texttt{hashlib}, \texttt{heapq}, \texttt{multiprocessing}) and produce identical output on any platform. No third-party packages are needed.
+
+\vspace{1em}
+\noindent\textbf{Repository:}
+\url{https://github.com/RazaHassan491/-2-3-.....git}
+
+\end{document}
