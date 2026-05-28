@@ -5,9 +5,9 @@
 - **M2** = `book` (given)
 - **M1** = `heir` (decrypted)
 
-## How to Run (Python 3 only, no extra libraries needed)
+## How to Run
 
-### Step 1 — Find the key using KPA brute force (~80 seconds)
+### Step 1 — Find the key using KPA brute force
 ```bash
 python3 crack_v10.py
 ```
